@@ -15,7 +15,6 @@ import type {
 } from '@/types';
 import { AuthError, ErrorCodes } from '@/types';
 import { TokenStorageManager } from '@utils/storage';
-import { isJWTExpired, parseJWT } from '@utils/jwt';
 
 /** 小程序登录参数 */
 export interface MPLoginParams {
@@ -218,23 +217,12 @@ export class MiniProgramAuth {
       return false;
     }
 
-    // 检查 Token 是否过期
-    if (isJWTExpired(store.accessToken)) {
+    const isExpired = await this.tokenManager.isExpired(60 * 1000);
+    if (isExpired) {
       return !!store.refreshToken;
     }
 
     return true;
-  }
-
-  /**
-   * 获取当前用户的 Claims
-   */
-  async getClaims(): Promise<Record<string, unknown> | null> {
-    const store = await this.tokenManager.get();
-    if (!store.accessToken) {
-      return null;
-    }
-    return parseJWT(store.accessToken);
   }
 
   // ==================== 事件系统 ====================

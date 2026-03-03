@@ -27,9 +27,9 @@ export type {
   MultiAudienceTokenResponse,
   MultiAudienceTokenStore,
   // User
+  UserInfo,
   ProfileResponse,
   UpdateProfileRequest,
-  JWTClaims,
   AuthorizeParams,
   PKCEParams,
   IDPType,
@@ -58,7 +58,6 @@ export { AuthError, ErrorCodes } from '@/types';
 
 // ==================== 工具函数 ====================
 export { generatePKCE, generateCodeVerifier, generateCodeChallenge, isValidCodeVerifier } from '@utils/pkce';
-export { parseJWT, isJWTExpired, getJWTExpiresAt, getJWTScope } from '@utils/jwt';
 export { BrowserStorageAdapter, MemoryStorageAdapter, TokenStorageManager, FlowStateManager, StorageKeys } from '@utils/storage';
 
 // ==================== 命名空间导出 ====================

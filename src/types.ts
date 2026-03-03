@@ -126,19 +126,18 @@ export interface TokenStore {
 /** 多 audience Token 存储 */
 export type MultiAudienceTokenStore = Record<string, TokenStore>;
 
-/** JWT Claims */
-export interface JWTClaims {
-  iss: string;
-  sub: string;
-  aud: string | string[];
-  exp: number;
-  iat: number;
-  scope?: string;
-  openid?: string;
-  [key: string]: unknown;
-}
-
 // ==================== 用户信息 ====================
+
+/** 用户基础信息（从 aegis /auth/userinfo 获取，token 解密 + 脱敏） */
+export interface UserInfo {
+  sub: string;
+  nickname?: string;
+  picture?: string;
+  email?: string;
+  email_verified: boolean;
+  phone?: string;
+  phone_verified: boolean;
+}
 
 /** 用户 Profile（从 iris /user/profile 获取，完整用户资料） */
 export interface ProfileResponse {

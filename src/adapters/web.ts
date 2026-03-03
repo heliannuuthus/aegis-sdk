@@ -6,6 +6,7 @@
 import type {
   AuthConfig,
   AudienceScope,
+  UserInfo,
   ProfileResponse,
   UpdateProfileRequest,
 } from '@/types';
@@ -178,6 +179,16 @@ export class WebAuth {
     return this.auth.isAllowedUrl(url);
   }
 
+  // ==================== UserInfo API ====================
+
+  /**
+   * 获取用户基础信息（脱敏）
+   * 从 aegis 服务端解密 token 获取，无需额外配置
+   */
+  async getUserInfo(): Promise<UserInfo> {
+    return this.auth.getUserInfo();
+  }
+
   // ==================== Profile API ====================
 
   /**
@@ -246,13 +257,6 @@ export class WebAuth {
   }
 
   /**
-   * 获取当前用户的 Claims
-   */
-  async getClaims() {
-    return this.auth.getClaims();
-  }
-
-  /**
    * 保存当前路径（用于登录后恢复）
    * 注意：loginWithRedirect 已自动保存，此方法用于手动保存场景
    */
@@ -313,6 +317,7 @@ export function createAuthContext(auth: WebAuth) {
     isAuthenticated: () => auth.isAuthenticated(),
     getAccessToken: (audience?: string) => auth.getAccessToken(audience),
     getAudiences: () => auth.getAudiences(),
+    getUserInfo: () => auth.getUserInfo(),
     getProfile: (endpoint?: string, audience?: string) =>
       auth.getProfile(endpoint, audience),
     updateProfile: (

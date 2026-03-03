@@ -10,6 +10,7 @@ import type {
   HttpClient,
   TokenResponse,
   MultiAudienceTokenResponse,
+  UserInfo,
   ProfileResponse,
   UpdateProfileRequest,
   AuthEvent,
@@ -26,7 +27,6 @@ import type {
 import { AuthError, ErrorCodes } from '@/types';
 import { TokenStorageManager, FlowStateManager, BrowserStorageAdapter } from '@utils/storage';
 import { generatePKCE } from '@utils/pkce';
-import { parseJWT } from '@utils/jwt';
 
 /**
  * Aegis Auth
@@ -365,6 +365,39 @@ export class Auth {
     return response.data;
   }
 
+  // ==================== UserInfo API（aegis） ====================
+
+  /**
+   * 获取用户基础信息（从 aegis /auth/userinfo，服务端解密 token 返回脱敏数据）
+   * 无需额外配置，使用主 access_token 即可
+   */
+  async getUserInfo(): Promise<UserInfo> {
+    const token = await this.getAccessToken();
+    if (!token) {
+      throw new AuthError(
+        ErrorCodes.NOT_AUTHENTICATED,
+        'Not authenticated'
+      );
+    }
+
+    const response = await this.httpClient.request<UserInfo>({
+      method: 'GET',
+      url: `${this.config.endpoint}/auth/userinfo`,
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (response.status !== 200) {
+      throw new AuthError(
+        ErrorCodes.SERVER_ERROR,
+        'Failed to get user info'
+      );
+    }
+
+    return response.data;
+  }
+
   // ==================== Profile API（iris） ====================
 
   /**
@@ -490,7 +523,7 @@ export class Auth {
       return false;
     }
 
-    // 基于 token exchange 时存储的 expires_at 判断过期，与 token 格式无关（兼容 JWT/PASETO）
+    // 基于 token exchange 时存储的 expires_at 判断过期，与 token 格式无关
     // 使用 60s buffer（仅判断是否仍可用，区别于 getAccessToken 的 5min 提前刷新）
     const isExpired = await this.tokenManager.isExpired(60 * 1000);
     if (isExpired) {
@@ -503,17 +536,6 @@ export class Auth {
 
     console.log('[Aegis SDK] isAuthenticated: true');
     return true;
-  }
-
-  /**
-   * 获取当前用户的 Claims
-   */
-  async getClaims(): Promise<Record<string, unknown> | null> {
-    const store = await this.tokenManager.get();
-    if (!store.accessToken) {
-      return null;
-    }
-    return parseJWT(store.accessToken);
   }
 
   // ==================== Challenge API ====================
@@ -717,7 +739,6 @@ export class Auth {
     // 保存 audiences 列表
     await this.tokenManager.saveAudiences(audienceNames);
 
-    // 第一个 audience 作为默认（主）token
     let primaryTokens: TokenResponse | null = null;
 
     for (const [aud, tokenResp] of Object.entries(multiTokens)) {
@@ -731,6 +752,13 @@ export class Auth {
 
       if (!primaryTokens) {
         primaryTokens = tokenResp;
+        // 第一个 audience 同时作为默认 token，保证 isAuthenticated() / getAccessToken() 正常工作
+        await this.tokenManager.save(
+          tokenResp.access_token,
+          tokenResp.refresh_token ?? null,
+          tokenResp.expires_in,
+          tokenResp.scope
+        );
       }
     }
 
