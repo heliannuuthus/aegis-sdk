@@ -3,343 +3,195 @@
  */
 
 import type { StorageAdapter, TokenStore, MultiAudienceTokenStore } from '@/types';
+import { extractExp } from '@utils/paseto';
 
-/** 存储 Key 前缀 */
-const STORAGE_PREFIX = 'aegis_';
-
-/** 存储 Key */
 export const StorageKeys = {
-  // Token 相关
-  ACCESS_TOKEN: `${STORAGE_PREFIX}access_token`,
-  REFRESH_TOKEN: `${STORAGE_PREFIX}refresh_token`,
-  EXPIRES_AT: `${STORAGE_PREFIX}expires_at`,
-  SCOPE: `${STORAGE_PREFIX}scope`,
-  AUDIENCES: `${STORAGE_PREFIX}audiences`,
-  // OAuth 流程状态
-  CODE_VERIFIER: `${STORAGE_PREFIX}code_verifier`,
-  STATE: `${STORAGE_PREFIX}state`,
-  AUDIENCE: `${STORAGE_PREFIX}audience`,
-  REDIRECT_URI: `${STORAGE_PREFIX}redirect_uri`,
-  MULTI_AUDIENCES: `${STORAGE_PREFIX}multi_audiences`,
-  RETURN_TO: `${STORAGE_PREFIX}return_to`,
+  ACCESS_TOKEN: '###aegis@access-token###',
+  ID_TOKEN: '###aegis@id-token###',
+  REFRESH_TOKEN: '###aegis@refresh-token###',
+  AUDIENCES: '###aegis@audiences###',
+  CODE_VERIFIER: '###aegis@pkce-verifier###',
+  STATE: '###aegis@flow-state###',
+  AUDIENCE: '###aegis@flow-audience###',
+  REDIRECT_URI: '###aegis@flow-redirect-uri###',
+  MULTI_AUDIENCES: '###aegis@flow-audiences###',
+  RETURN_TO: '###aegis@flow-return-to###',
 } as const;
 
-/** 生成带 audience 后缀的 storage key */
-function audienceKey(baseKey: string, audience: string): string {
-  return `${baseKey}:${audience}`;
+function scopedKey(base: string, scope: string): string {
+  return base.replace(/###$/, `@${scope}###`);
 }
 
-/**
- * 浏览器 localStorage 适配器
- */
 export class BrowserStorageAdapter implements StorageAdapter {
   getItem(key: string): string | null {
-    try {
-      return localStorage.getItem(key);
-    } catch {
-      return null;
-    }
+    try { return localStorage.getItem(key); } catch { return null; }
   }
-
   setItem(key: string, value: string): void {
-    try {
-      localStorage.setItem(key, value);
-    } catch {
-      console.warn('[Aegis SDK] Failed to save to localStorage');
-    }
+    try { localStorage.setItem(key, value); } catch { /* noop */ }
   }
-
   removeItem(key: string): void {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // ignore
-    }
+    try { localStorage.removeItem(key); } catch { /* noop */ }
   }
 }
 
-/**
- * 内存存储适配器（用于测试或无持久化场景）
- */
 export class MemoryStorageAdapter implements StorageAdapter {
   private store = new Map<string, string>();
-
-  getItem(key: string): string | null {
-    return this.store.get(key) ?? null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.store.set(key, value);
-  }
-
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-
-  clear(): void {
-    this.store.clear();
-  }
+  getItem(key: string): string | null { return this.store.get(key) ?? null; }
+  setItem(key: string, value: string): void { this.store.set(key, value); }
+  removeItem(key: string): void { this.store.delete(key); }
+  clear(): void { this.store.clear(); }
 }
 
 /**
- * Token 存储管理器
- * 只负责 Token 的持久化（单 audience / 多 audience）
+ * Token 持久化管理，过期时间从 token payload 解析
  */
-export class TokenStorageManager {
-  constructor(private storage: StorageAdapter) {}
+export class TokenStorage {
+  constructor(private s: StorageAdapter) {}
 
-  // ==================== 单 Audience ====================
+  // ---- 默认 audience ----
 
-  async save(
-    accessToken: string,
-    refreshToken: string | null,
-    expiresIn: number,
-    scope?: string
-  ): Promise<void> {
-    const expiresAt = Date.now() + expiresIn * 1000;
-
-    await Promise.resolve(this.storage.setItem(StorageKeys.ACCESS_TOKEN, accessToken));
-    await Promise.resolve(this.storage.setItem(StorageKeys.EXPIRES_AT, String(expiresAt)));
-
+  async persist(accessToken: string, refreshToken: string | null): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.ACCESS_TOKEN, accessToken));
     if (refreshToken) {
-      await Promise.resolve(this.storage.setItem(StorageKeys.REFRESH_TOKEN, refreshToken));
-    }
-
-    if (scope) {
-      await Promise.resolve(this.storage.setItem(StorageKeys.SCOPE, scope));
+      await Promise.resolve(this.s.setItem(StorageKeys.REFRESH_TOKEN, refreshToken));
     }
   }
 
-  async get(): Promise<TokenStore> {
-    const [accessToken, refreshToken, expiresAtStr, scope] = await Promise.all([
-      Promise.resolve(this.storage.getItem(StorageKeys.ACCESS_TOKEN)),
-      Promise.resolve(this.storage.getItem(StorageKeys.REFRESH_TOKEN)),
-      Promise.resolve(this.storage.getItem(StorageKeys.EXPIRES_AT)),
-      Promise.resolve(this.storage.getItem(StorageKeys.SCOPE)),
+  async load(): Promise<TokenStore> {
+    const [accessToken, refreshToken] = await Promise.all([
+      Promise.resolve(this.s.getItem(StorageKeys.ACCESS_TOKEN)),
+      Promise.resolve(this.s.getItem(StorageKeys.REFRESH_TOKEN)),
     ]);
-
-    return {
-      accessToken,
-      refreshToken,
-      expiresAt: expiresAtStr ? parseInt(expiresAtStr, 10) : null,
-      scope,
-    };
+    return { accessToken, refreshToken };
   }
 
-  async clear(): Promise<void> {
+  async purge(): Promise<void> {
     await Promise.all([
-      Promise.resolve(this.storage.removeItem(StorageKeys.ACCESS_TOKEN)),
-      Promise.resolve(this.storage.removeItem(StorageKeys.REFRESH_TOKEN)),
-      Promise.resolve(this.storage.removeItem(StorageKeys.EXPIRES_AT)),
-      Promise.resolve(this.storage.removeItem(StorageKeys.SCOPE)),
+      Promise.resolve(this.s.removeItem(StorageKeys.ACCESS_TOKEN)),
+      Promise.resolve(this.s.removeItem(StorageKeys.REFRESH_TOKEN)),
     ]);
   }
 
-  async isExpired(bufferMs: number = 5 * 60 * 1000): Promise<boolean> {
-    const expiresAtStr = await Promise.resolve(
-      this.storage.getItem(StorageKeys.EXPIRES_AT)
-    );
-    if (!expiresAtStr) return true;
-    const expiresAt = parseInt(expiresAtStr, 10);
-    return Date.now() + bufferMs >= expiresAt;
+  async expired(bufferMs = 5 * 60 * 1000): Promise<boolean> {
+    const token = await Promise.resolve(this.s.getItem(StorageKeys.ACCESS_TOKEN));
+    if (!token) return true;
+    const exp = extractExp(token);
+    return !exp || Date.now() + bufferMs >= exp.getTime();
   }
 
-  // ==================== 多 Audience ====================
+  // ---- scoped (per-audience) ----
 
-  async saveAudiences(audiences: string[]): Promise<void> {
-    await Promise.resolve(
-      this.storage.setItem(StorageKeys.AUDIENCES, JSON.stringify(audiences))
-    );
+  async persistScoped(audience: string, accessToken: string, refreshToken: string | null): Promise<void> {
+    await Promise.resolve(this.s.setItem(scopedKey(StorageKeys.ACCESS_TOKEN, audience), accessToken));
+    if (refreshToken) {
+      await Promise.resolve(this.s.setItem(scopedKey(StorageKeys.REFRESH_TOKEN, audience), refreshToken));
+    }
   }
 
-  getAudiences(): string[] {
-    const raw = this.storage.getItem(StorageKeys.AUDIENCES) as string | null;
+  async loadScoped(audience: string): Promise<TokenStore> {
+    const [accessToken, refreshToken] = await Promise.all([
+      Promise.resolve(this.s.getItem(scopedKey(StorageKeys.ACCESS_TOKEN, audience))),
+      Promise.resolve(this.s.getItem(scopedKey(StorageKeys.REFRESH_TOKEN, audience))),
+    ]);
+    return { accessToken, refreshToken };
+  }
+
+  async expiredScoped(audience: string, bufferMs = 5 * 60 * 1000): Promise<boolean> {
+    const token = await Promise.resolve(this.s.getItem(scopedKey(StorageKeys.ACCESS_TOKEN, audience)));
+    if (!token) return true;
+    const exp = extractExp(token);
+    return !exp || Date.now() + bufferMs >= exp.getTime();
+  }
+
+  async purgeScoped(audience: string): Promise<void> {
+    await Promise.all([
+      Promise.resolve(this.s.removeItem(scopedKey(StorageKeys.ACCESS_TOKEN, audience))),
+      Promise.resolve(this.s.removeItem(scopedKey(StorageKeys.REFRESH_TOKEN, audience))),
+    ]);
+  }
+
+  // ---- audience registry ----
+
+  async registerAudiences(audiences: string[]): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.AUDIENCES, JSON.stringify(audiences)));
+  }
+
+  audiences(): string[] {
+    const raw = this.s.getItem(StorageKeys.AUDIENCES) as string | null;
     if (!raw) return [];
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return [];
-    }
+    try { return JSON.parse(raw); } catch { return []; }
   }
 
-  async saveForAudience(
-    audience: string,
-    accessToken: string,
-    refreshToken: string | null,
-    expiresIn: number,
-    scope?: string
-  ): Promise<void> {
-    const expiresAt = Date.now() + expiresIn * 1000;
-
-    await Promise.resolve(
-      this.storage.setItem(audienceKey(StorageKeys.ACCESS_TOKEN, audience), accessToken)
-    );
-    await Promise.resolve(
-      this.storage.setItem(audienceKey(StorageKeys.EXPIRES_AT, audience), String(expiresAt))
-    );
-
-    if (refreshToken) {
-      await Promise.resolve(
-        this.storage.setItem(audienceKey(StorageKeys.REFRESH_TOKEN, audience), refreshToken)
-      );
-    }
-
-    if (scope) {
-      await Promise.resolve(
-        this.storage.setItem(audienceKey(StorageKeys.SCOPE, audience), scope)
-      );
-    }
-  }
-
-  async getForAudience(audience: string): Promise<TokenStore> {
-    const [accessToken, refreshToken, expiresAtStr, scope] = await Promise.all([
-      Promise.resolve(this.storage.getItem(audienceKey(StorageKeys.ACCESS_TOKEN, audience))),
-      Promise.resolve(this.storage.getItem(audienceKey(StorageKeys.REFRESH_TOKEN, audience))),
-      Promise.resolve(this.storage.getItem(audienceKey(StorageKeys.EXPIRES_AT, audience))),
-      Promise.resolve(this.storage.getItem(audienceKey(StorageKeys.SCOPE, audience))),
-    ]);
-
-    return {
-      accessToken,
-      refreshToken,
-      expiresAt: expiresAtStr ? parseInt(expiresAtStr, 10) : null,
-      scope,
-    };
-  }
-
-  async isExpiredForAudience(audience: string, bufferMs: number = 5 * 60 * 1000): Promise<boolean> {
-    const expiresAtStr = await Promise.resolve(
-      this.storage.getItem(audienceKey(StorageKeys.EXPIRES_AT, audience))
-    );
-    if (!expiresAtStr) return true;
-    const expiresAt = parseInt(expiresAtStr, 10);
-    return Date.now() + bufferMs >= expiresAt;
-  }
-
-  async clearForAudience(audience: string): Promise<void> {
-    await Promise.all([
-      Promise.resolve(this.storage.removeItem(audienceKey(StorageKeys.ACCESS_TOKEN, audience))),
-      Promise.resolve(this.storage.removeItem(audienceKey(StorageKeys.REFRESH_TOKEN, audience))),
-      Promise.resolve(this.storage.removeItem(audienceKey(StorageKeys.EXPIRES_AT, audience))),
-      Promise.resolve(this.storage.removeItem(audienceKey(StorageKeys.SCOPE, audience))),
-    ]);
-  }
-
-  async getAllAudiences(): Promise<MultiAudienceTokenStore> {
-    const audiences = this.getAudiences();
+  async snapshot(): Promise<MultiAudienceTokenStore> {
     const result: MultiAudienceTokenStore = {};
-    for (const aud of audiences) {
-      result[aud] = await this.getForAudience(aud);
+    for (const aud of this.audiences()) {
+      result[aud] = await this.loadScoped(aud);
     }
     return result;
   }
 
-  async clearAll(): Promise<void> {
-    const audiences = this.getAudiences();
-    for (const aud of audiences) {
-      await this.clearForAudience(aud);
+  async purgeAll(): Promise<void> {
+    for (const aud of this.audiences()) {
+      await this.purgeScoped(aud);
     }
-    await Promise.resolve(this.storage.removeItem(StorageKeys.AUDIENCES));
-    await this.clear();
+    await Promise.resolve(this.s.removeItem(StorageKeys.AUDIENCES));
+    await this.purge();
   }
 }
 
 /**
- * OAuth 流程状态管理器
- * 管理授权流程中的一次性状态（PKCE、state、audience、redirectUri、returnTo 等）
- * 这些数据在 authorize → callback 之间跨页面传递，回调后即消费销毁
+ * OAuth 一次性流程状态（authorize → callback 跨页面传递）
  */
-export class FlowStateManager {
-  constructor(private storage: StorageAdapter) {}
+export class FlowState {
+  constructor(private s: StorageAdapter) {}
 
-  // ==================== PKCE ====================
-
-  async saveCodeVerifier(verifier: string): Promise<void> {
-    await Promise.resolve(this.storage.setItem(StorageKeys.CODE_VERIFIER, verifier));
+  async stashCodeVerifier(v: string): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.CODE_VERIFIER, v));
+  }
+  popCodeVerifier(): string | null {
+    return this.pop(StorageKeys.CODE_VERIFIER);
   }
 
-  consumeCodeVerifier(): string | null {
-    const verifier = this.storage.getItem(StorageKeys.CODE_VERIFIER) as string | null;
-    if (verifier) {
-      this.storage.removeItem(StorageKeys.CODE_VERIFIER);
-    }
-    return verifier;
+  async stashState(v: string): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.STATE, v));
+  }
+  popState(): string | null {
+    return this.pop(StorageKeys.STATE);
   }
 
-  // ==================== State ====================
-
-  async saveState(state: string): Promise<void> {
-    await Promise.resolve(this.storage.setItem(StorageKeys.STATE, state));
+  async stashAudience(v: string): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.AUDIENCE, v));
+  }
+  popAudience(): string | null {
+    return this.pop(StorageKeys.AUDIENCE);
   }
 
-  consumeState(): string | null {
-    const state = this.storage.getItem(StorageKeys.STATE) as string | null;
-    if (state) {
-      this.storage.removeItem(StorageKeys.STATE);
-    }
-    return state;
+  async stashRedirectUri(v: string): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.REDIRECT_URI, v));
+  }
+  popRedirectUri(): string | null {
+    return this.pop(StorageKeys.REDIRECT_URI);
   }
 
-  // ==================== Audience ====================
-
-  async saveAudience(audience: string): Promise<void> {
-    await Promise.resolve(this.storage.setItem(StorageKeys.AUDIENCE, audience));
+  async stashAudiences(v: Record<string, unknown>): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.MULTI_AUDIENCES, JSON.stringify(v)));
+  }
+  popAudiences(): Record<string, unknown> | null {
+    const raw = this.pop(StorageKeys.MULTI_AUDIENCES);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
   }
 
-  consumeAudience(): string | null {
-    const audience = this.storage.getItem(StorageKeys.AUDIENCE) as string | null;
-    if (audience) {
-      this.storage.removeItem(StorageKeys.AUDIENCE);
-    }
-    return audience;
+  async stashReturnTo(v: string): Promise<void> {
+    await Promise.resolve(this.s.setItem(StorageKeys.RETURN_TO, v));
+  }
+  popReturnTo(): string | null {
+    return this.pop(StorageKeys.RETURN_TO);
   }
 
-  // ==================== Redirect URI ====================
-
-  async saveRedirectUri(redirectUri: string): Promise<void> {
-    await Promise.resolve(this.storage.setItem(StorageKeys.REDIRECT_URI, redirectUri));
-  }
-
-  consumeRedirectUri(): string | null {
-    const redirectUri = this.storage.getItem(StorageKeys.REDIRECT_URI) as string | null;
-    if (redirectUri) {
-      this.storage.removeItem(StorageKeys.REDIRECT_URI);
-    }
-    return redirectUri;
-  }
-
-  // ==================== Multi-Audiences 配置 ====================
-
-  async saveMultiAudiences(audiences: Record<string, unknown>): Promise<void> {
-    await Promise.resolve(
-      this.storage.setItem(StorageKeys.MULTI_AUDIENCES, JSON.stringify(audiences))
-    );
-  }
-
-  consumeMultiAudiences(): Record<string, unknown> | null {
-    const raw = this.storage.getItem(StorageKeys.MULTI_AUDIENCES) as string | null;
-    if (raw) {
-      this.storage.removeItem(StorageKeys.MULTI_AUDIENCES);
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  // ==================== Return To ====================
-
-  async saveReturnTo(path: string): Promise<void> {
-    await Promise.resolve(this.storage.setItem(StorageKeys.RETURN_TO, path));
-  }
-
-  consumeReturnTo(): string | null {
-    const path = this.storage.getItem(StorageKeys.RETURN_TO) as string | null;
-    if (path) {
-      this.storage.removeItem(StorageKeys.RETURN_TO);
-    }
-    return path;
+  private pop(key: string): string | null {
+    const v = this.s.getItem(key) as string | null;
+    if (v) this.s.removeItem(key);
+    return v;
   }
 }

@@ -1,6 +1,5 @@
 /**
  * 小程序 Auth
- * 专门为小程序场景设计，不需要 PKCE 和重定向
  */
 
 import type {
@@ -14,235 +13,111 @@ import type {
   IDPType,
 } from '@/types';
 import { AuthError, ErrorCodes } from '@/types';
-import { TokenStorageManager } from '@utils/storage';
-import { isJWTExpired, parseJWT } from '@utils/jwt';
+import { TokenStorage } from '@utils/storage';
 
-/** 小程序登录参数 */
 export interface MPLoginParams {
-  /** 平台登录码 */
   code: string;
-  /** 用户昵称（可选） */
   nickname?: string;
-  /** 用户头像（可选） */
   avatar?: string;
 }
 
-/** 小程序配置 */
 export interface MPAuthConfig {
-  /** 认证服务器地址 */
   issuer: string;
-  /** IDP 类型 */
   idp: IDPType;
-  /** 存储适配器 */
   storage: StorageAdapter;
-  /** HTTP 客户端 */
   httpClient: HttpClient;
-  /** 启用调试日志 */
-  debug?: boolean;
 }
 
-/**
- * 小程序 Auth
- */
 export class MiniProgramAuth {
   private config: MPAuthConfig;
-  private tokenManager: TokenStorageManager;
+  private tokens: TokenStorage;
   private listeners: Map<AuthEventType, Set<AuthEventListener>> = new Map();
-  private debug: boolean;
 
   constructor(config: MPAuthConfig) {
     this.config = config;
-    this.debug = config.debug ?? false;
-    this.tokenManager = new TokenStorageManager(config.storage);
+    this.tokens = new TokenStorage(config.storage);
   }
 
-  // ==================== 公开方法 ====================
-
-  /**
-   * 小程序登录
-   * 使用平台 login API 获取的 code 换取 Token
-   */
   async login(params: MPLoginParams): Promise<TokenResponse> {
-    // 组合 code: idp:actual_code
-    const combinedCode = `${this.config.idp}:${params.code}`;
-
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
-      code: combinedCode,
+      code: `${this.config.idp}:${params.code}`,
     });
+    if (params.nickname) body.append('nickname', params.nickname);
+    if (params.avatar) body.append('avatar', params.avatar);
 
-    if (params.nickname) {
-      body.append('nickname', params.nickname);
-    }
-    if (params.avatar) {
-      body.append('avatar', params.avatar);
-    }
-
-    this.log('Login request - IDP:', this.config.idp);
-
-    const response = await this.config.httpClient.request<TokenResponse>({
+    const res = await this.config.httpClient.request<TokenResponse>({
       method: 'POST',
       url: `${this.config.issuer}/api/token`,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
     });
 
-    if (response.status !== 200) {
-      const error = response.data as unknown as {
-        error?: string;
-        error_description?: string;
-      };
-      throw new AuthError(
-        error?.error ?? ErrorCodes.INVALID_GRANT,
-        error?.error_description ?? 'Login failed'
-      );
+    if (res.status !== 200) {
+      const err = res.data as unknown as { error?: string; error_description?: string };
+      throw new AuthError(err?.error ?? ErrorCodes.INVALID_GRANT, err?.error_description ?? 'Login failed');
     }
 
-    // 保存 Token
-    await this.tokenManager.save(
-      response.data.access_token,
-      response.data.refresh_token ?? null,
-      response.data.expires_in,
-      response.data.scope
-    );
-
-    this.emit('login', response.data);
-    this.log('Login successful');
-
-    return response.data;
+    await this.tokens.persist(res.data.access_token, res.data.refresh_token ?? null);
+    this.emit('login', res.data);
+    return res.data;
   }
 
-  /**
-   * 获取 Access Token（自动刷新）
-   */
   async getAccessToken(): Promise<string | null> {
-    const store = await this.tokenManager.get();
+    const store = await this.tokens.load();
+    if (!store.accessToken) return null;
 
-    if (!store.accessToken) {
-      return null;
-    }
-
-    // 检查是否过期
-    const isExpired = await this.tokenManager.isExpired();
-    if (isExpired) {
-      // 尝试刷新
+    if (await this.tokens.expired()) {
       if (store.refreshToken) {
         try {
-          const tokens = await this.refreshToken(store.refreshToken);
-          return tokens.access_token;
-        } catch (error) {
-          this.log('Token refresh failed:', error);
+          return (await this.refreshToken(store.refreshToken)).access_token;
+        } catch {
           this.emit('token_expired');
-          await this.tokenManager.clear();
+          await this.tokens.purge();
           return null;
         }
-      } else {
-        this.emit('token_expired');
-        await this.tokenManager.clear();
-        return null;
       }
+      this.emit('token_expired');
+      await this.tokens.purge();
+      return null;
     }
 
     return store.accessToken;
   }
 
-  /**
-   * 确保 Token 有效（用于请求前检查）
-   */
-  async ensureValidToken(): Promise<string | null> {
-    return this.getAccessToken();
-  }
-
-  /**
-   * 刷新 Token
-   */
   async refreshToken(refreshToken?: string): Promise<TokenResponse> {
-    const token = refreshToken ?? (await this.tokenManager.get()).refreshToken;
+    const rt = refreshToken ?? (await this.tokens.load()).refreshToken;
+    if (!rt) throw new AuthError(ErrorCodes.NOT_AUTHENTICATED, 'No refresh token available');
 
-    if (!token) {
-      throw new AuthError(
-        ErrorCodes.NOT_AUTHENTICATED,
-        'No refresh token available'
-      );
-    }
-
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: token,
-    });
-
-    const response = await this.config.httpClient.request<TokenResponse>({
+    const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rt });
+    const res = await this.config.httpClient.request<TokenResponse>({
       method: 'POST',
       url: `${this.config.issuer}/api/token`,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
     });
 
-    if (response.status !== 200) {
-      throw new AuthError(ErrorCodes.INVALID_GRANT, 'Token refresh failed');
-    }
+    if (res.status !== 200) throw new AuthError(ErrorCodes.INVALID_GRANT, 'Token refresh failed');
 
-    // 保存新 Token
-    await this.tokenManager.save(
-      response.data.access_token,
-      response.data.refresh_token ?? null,
-      response.data.expires_in,
-      response.data.scope
-    );
-
-    this.emit('token_refreshed', response.data);
-    this.log('Token refreshed');
-
-    return response.data;
+    await this.tokens.persist(res.data.access_token, res.data.refresh_token ?? null);
+    this.emit('token_refreshed', res.data);
+    return res.data;
   }
 
-  /**
-   * 登出
-   */
   async logout(): Promise<void> {
-    await this.tokenManager.clear();
+    await this.tokens.purge();
     this.emit('logout');
-    this.log('Logged out');
   }
 
-  /**
-   * 检查是否已登录
-   */
   async isAuthenticated(): Promise<boolean> {
-    const store = await this.tokenManager.get();
-    if (!store.accessToken) {
-      return false;
-    }
-
-    // 检查 Token 是否过期
-    if (isJWTExpired(store.accessToken)) {
-      return !!store.refreshToken;
-    }
-
+    const store = await this.tokens.load();
+    if (!store.accessToken) return false;
+    if (await this.tokens.expired(60_000)) return !!store.refreshToken;
     return true;
   }
 
-  /**
-   * 获取当前用户的 Claims
-   */
-  async getClaims(): Promise<Record<string, unknown> | null> {
-    const store = await this.tokenManager.get();
-    if (!store.accessToken) {
-      return null;
-    }
-    return parseJWT(store.accessToken);
-  }
-
-  // ==================== 事件系统 ====================
-
   on(event: AuthEventType, listener: AuthEventListener): () => void {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, new Set());
-    }
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
     this.listeners.get(event)!.add(listener);
     return () => this.off(event, listener);
   }
@@ -253,12 +128,6 @@ export class MiniProgramAuth {
 
   private emit(type: AuthEventType, data?: unknown): void {
     const event: AuthEvent = { type, data };
-    this.listeners.get(type)?.forEach((listener) => listener(event));
-  }
-
-  private log(...args: unknown[]): void {
-    if (this.debug) {
-      console.log('[Aegis SDK]', ...args);
-    }
+    this.listeners.get(type)?.forEach((fn) => fn(event));
   }
 }

@@ -35,32 +35,20 @@ export interface AuthConfig {
   storage?: StorageAdapter;
   /** 自定义 HTTP 客户端 */
   httpClient?: HttpClient;
-  /** 启用调试日志 */
-  debug?: boolean;
-  /**
-   * 允许跳转的认证域名白名单（可选）
-   * 如果配置，authorize() 生成的 URL 会被校验，防止恶意配置篡改导致跳转到恶意地址
-   * 未配置时自动从 endpoint 提取域名
-   */
-  allowedAuthHosts?: string[];
 }
 
 /** 授权请求选项 */
 export interface AuthorizeOptions {
-  /** 目标服务 ID（必填，授权阶段只能指定一个 audience） */
-  audience: string;
+  /** 目标服务 ID（单 audience 时使用） */
+  audience?: string;
+  /** 多 audience 配置，key = audience (service_id)，value = 该 audience 的 scope 配置。传了 audiences 时 audience 会被忽略 */
+  audiences?: Record<string, AudienceScope>;
   /** 请求的 scope 列表（必填） */
   scopes: string[];
   /** 自定义 state */
   state?: string;
   /** 重定向 URI（覆盖配置中的默认值） */
   redirectUri?: string;
-  /**
-   * 多 audience 配置（可选）
-   * 如果指定，handleCallback 时会使用 JSON 模式请求多个 audience 的 token
-   * key = audience (service_id)，value = 该 audience 的 scope 配置
-   */
-  audiences?: Record<string, AudienceScope>;
 }
 
 // ==================== 存储适配器 ====================
@@ -100,6 +88,7 @@ export interface HttpClient {
 /** Token 响应（单 audience） */
 export interface TokenResponse {
   access_token: string;
+  id_token?: string;
   refresh_token?: string;
   token_type: string;
   expires_in: number;
@@ -119,54 +108,55 @@ export type MultiAudienceTokenResponse = Record<string, TokenResponse>;
 export interface TokenStore {
   accessToken: string | null;
   refreshToken: string | null;
-  expiresAt: number | null;
-  scope: string | null;
 }
 
 /** 多 audience Token 存储 */
 export type MultiAudienceTokenStore = Record<string, TokenStore>;
 
-/** JWT Claims */
-export interface JWTClaims {
-  iss: string;
+// ==================== ID Token ====================
+
+/** ID Token 解析后的 claims */
+export interface IDTokenClaims {
+  /** 用户 OpenID */
   sub: string;
-  aud: string | string[];
-  exp: number;
-  iat: number;
-  scope?: string;
-  openid?: string;
-  [key: string]: unknown;
+  /** 签发者 */
+  iss: string;
+  /** Client ID */
+  aud: string;
+  /** 签发时间 (ISO 8601) */
+  iat: string;
+  /** 过期时间 (ISO 8601) */
+  exp: string;
+  /** 昵称 */
+  nic?: string;
+  /** 头像 */
+  pic?: string;
+}
+
+/** 公钥信息 */
+export interface PublicKeyInfo {
+  version: string;
+  purpose: string;
+  public_key: string;
+}
+
+/** 公钥响应 */
+export interface PublicKeysResponse {
+  main: PublicKeyInfo;
+  keys: PublicKeyInfo[];
 }
 
 // ==================== 用户信息 ====================
 
-/** 用户 Profile（从 iris /user/profile 获取，完整用户资料） */
-export interface ProfileResponse {
-  id: string;
+/** 用户基础信息（从 aegis /auth/userinfo 获取，token 解密 + 脱敏） */
+export interface UserInfo {
+  sub: string;
   nickname?: string;
   picture?: string;
   email?: string;
   email_verified: boolean;
   phone?: string;
-}
-
-/** 更新 Profile 请求（JSON Merge Patch 语义，undefined = 不修改，null = 清除） */
-export interface UpdateProfileRequest {
-  nickname?: string | null;
-  picture?: string | null;
-  old_password?: string;
-  password?: string | null;
-}
-
-// ==================== 授权请求 ====================
-
-/** 授权请求参数 */
-export interface AuthorizeParams {
-  responseType?: 'code';
-  scope?: string;
-  state?: string;
-  /** 额外参数 */
-  [key: string]: string | undefined;
+  phone_verified: boolean;
 }
 
 /** PKCE 参数 */
