@@ -146,8 +146,6 @@ export interface TaroAuthConfig {
   issuer: string;
   /** 自定义 IDP（默认自动检测） */
   idp?: IDPType;
-  /** 启用调试日志 */
-  debug?: boolean;
 }
 
 /**
@@ -161,7 +159,6 @@ export function createTaroAuth(config: TaroAuthConfig): TaroAuth {
     idp,
     storage: new TaroStorageAdapter(),
     httpClient: new TaroHttpClient(),
-    debug: config.debug,
   });
 
   return new TaroAuth(auth, idp);
@@ -202,13 +199,6 @@ export class TaroAuth {
    */
   async getAccessToken(): Promise<string | null> {
     return this.auth.getAccessToken();
-  }
-
-  /**
-   * 确保 Token 有效
-   */
-  async ensureValidToken(): Promise<string | null> {
-    return this.auth.ensureValidToken();
   }
 
   /**
