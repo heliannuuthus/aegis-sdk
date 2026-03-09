@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: heliannuuthus/hephaestus/.github/workflows/ci-node.yml@refactor/composite-actions
+    with:
+      test: test
