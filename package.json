@@ -1,5 +1,5 @@
 {
-  "name": "@aegis/sdk",
+  "name": "@heliannuuthus/aegis-sdk",
   "version": "1.0.0",
   "description": "Aegis Auth SDK - 支持 Web 和小程序的认证 SDK",
   "type": "module",
@@ -68,6 +68,9 @@
     "wechat",
     "taro"
   ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "author": "heliannuuthus",
   "license": "MIT",
   "repository": {
