@@ -1,4 +1,6 @@
 export { Auth } from '@core/client';
+export { useAuth } from './hooks/useAuth';
+export type { UseAuthConfig, UseAuthReturn } from './hooks/useAuth';
 
 export type {
   AuthConfig,
@@ -8,6 +10,7 @@ export type {
   HttpRequestConfig,
   HttpResponse,
   TokenResponse,
+  CallbackResult,
   TokenStore,
   AudienceScope,
   MultiAudienceTokenResponse,

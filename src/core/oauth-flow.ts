@@ -4,6 +4,7 @@ import type {
   AuthorizeOptions,
   AudienceScope,
   TokenResponse,
+  CallbackResult,
   MultiAudienceTokenResponse,
   PKCEParams,
 } from '@/types';
@@ -77,34 +78,49 @@ export class OAuthFlow {
     return { url, pkce, state };
   }
 
-  async handleCallback(code: string, state?: string): Promise<TokenResponse> {
-    const savedState = await this.pop(this.keys.STATE);
-    if (state && savedState && state !== savedState) {
-      throw new AuthError(ErrorCodes.INVALID_REQUEST, 'State mismatch');
+  async handleCallback(code: string, state?: string): Promise<CallbackResult> {
+    try {
+      const savedState = await this.pop(this.keys.STATE);
+      if (state && savedState && state !== savedState) {
+        throw new AuthError(ErrorCodes.INVALID_REQUEST, 'State mismatch');
+      }
+
+      const codeVerifier = await this.pop(this.keys.CODE_VERIFIER);
+      if (!codeVerifier) {
+        throw new AuthError(ErrorCodes.INVALID_REQUEST, 'Code verifier not found');
+      }
+
+      const redirectUri = await this.pop(this.keys.REDIRECT_URI);
+      const storedAudiences = await this.popJson<Record<string, AudienceScope>>(this.keys.AUDIENCES);
+      await this.pop(this.keys.AUDIENCE);
+
+      const multiAudience = storedAudiences && Object.keys(storedAudiences).length > 0;
+      const tokens = multiAudience
+        ? await this.redeemMultiAudience(code, codeVerifier, redirectUri)
+        : await this.redeemCode(code, codeVerifier, redirectUri);
+
+      const returnTo = await this.pop(this.keys.RETURN_TO);
+      return { ...tokens, returnTo: returnTo ?? null };
+    } catch (e) {
+      await this.s.removeItem(this.keys.RETURN_TO);
+      throw e;
+    } finally {
+      await this.purgeFlow();
     }
+  }
 
-    const codeVerifier = await this.pop(this.keys.CODE_VERIFIER);
-    if (!codeVerifier) {
-      throw new AuthError(ErrorCodes.INVALID_REQUEST, 'Code verifier not found');
-    }
-
-    const redirectUri = await this.pop(this.keys.REDIRECT_URI);
-    const storedAudiences = await this.popJson<Record<string, AudienceScope>>(this.keys.AUDIENCES);
-    await this.pop(this.keys.AUDIENCE);
-
-    const multiAudience = storedAudiences && Object.keys(storedAudiences).length > 0;
-
-    return multiAudience
-      ? this.redeemMultiAudience(code, codeVerifier, redirectUri)
-      : this.redeemCode(code, codeVerifier, redirectUri);
+  private async purgeFlow(): Promise<void> {
+    await Promise.all([
+      this.s.removeItem(this.keys.STATE),
+      this.s.removeItem(this.keys.CODE_VERIFIER),
+      this.s.removeItem(this.keys.REDIRECT_URI),
+      this.s.removeItem(this.keys.AUDIENCES),
+      this.s.removeItem(this.keys.AUDIENCE),
+    ]);
   }
 
   async saveReturnTo(path: string): Promise<void> {
     await this.s.setItem(this.keys.RETURN_TO, path);
-  }
-
-  async consumeReturnTo(): Promise<string | null> {
-    return this.pop(this.keys.RETURN_TO);
   }
 
   // ==================== Internals ====================
