@@ -4,6 +4,7 @@ import type {
   StorageAdapter,
   HttpClient,
   TokenResponse,
+  CallbackResult,
   IDTokenClaims,
   ConnectionsResponse,
   CreateChallengeRequest,
@@ -62,7 +63,7 @@ export class Auth {
     return this.flow.authorize(options);
   }
 
-  async handleCallback(code: string, state?: string): Promise<TokenResponse> {
+  async handleCallback(code: string, state?: string): Promise<CallbackResult> {
     return this.flow.handleCallback(code, state);
   }
 
@@ -86,14 +87,8 @@ export class Auth {
     return this.tokens.getUser();
   }
 
-  // ==================== ReturnTo ====================
-
   async saveReturnTo(path: string): Promise<void> {
     return this.flow.saveReturnTo(path);
-  }
-
-  async consumeReturnTo(): Promise<string | null> {
-    return this.flow.consumeReturnTo();
   }
 
   // ==================== Session ====================

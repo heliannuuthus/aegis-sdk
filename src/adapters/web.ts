@@ -67,9 +67,8 @@ export class WebAuth {
     if (!code) return { success: false, error: 'No authorization code found' };
 
     try {
-      await this.auth.handleCallback(code, state ?? undefined);
-      const savedPath = await this.auth.consumeReturnTo();
-      return { success: true, redirectTo: savedPath || '/' };
+      const result = await this.auth.handleCallback(code, state ?? undefined);
+      return { success: true, redirectTo: result.returnTo || '/' };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

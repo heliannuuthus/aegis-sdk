@@ -71,6 +71,11 @@ export interface TokenResponse {
   scope?: string;
 }
 
+/** Result of handleCallback: tokens + returnTo path (consumed and cleared by SDK). */
+export interface CallbackResult extends TokenResponse {
+  returnTo: string | null;
+}
+
 export interface AudienceScope {
   scope?: string;
 }
